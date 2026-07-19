@@ -71,7 +71,7 @@ class FreaExplorer:
         self._build_ui()
 
         for d in GAME_DIR_DEFAULTS:
-            if (Path(d) / 'EliteDangerous64.exe').exists():
+            if (Path(d) / 'Win64').is_dir():
                 if self.load_archive(d):
                     self.populate_tree()
                 break
@@ -261,14 +261,17 @@ class FreaExplorer:
         self.game_dir = Path(game_dir)
         self.win64_dir = self.game_dir / 'Win64'
         self.binary_path = self.game_dir / 'EliteDangerous64.exe'
-        if not self.win64_dir.exists() or not self.binary_path.exists():
-            messagebox.showerror("Error", f"Win64/ or EliteDangerous64.exe missing in:\n{game_dir}")
+        if not self.win64_dir.exists():
+            messagebox.showerror("Error", f"Win64/ missing in:\n{game_dir}")
             return False
-        try:
-            self.rsa = fc.load_rsa_key(self.binary_path)
-        except Exception as ex:
-            messagebox.showerror("Error", f"Failed to read RSA pubkey: {ex}")
-            return False
+        # RSA key is baked in; only read the binary if it's present (to catch a key change).
+        if self.binary_path.exists():
+            try:
+                self.rsa = fc.load_rsa_key(self.binary_path)
+            except Exception:
+                self.rsa = fc.default_rsa_key()
+        else:
+            self.rsa = fc.default_rsa_key()
         self.meta.clear()
         self.addr_var.set(str(self.game_dir))
         self.status.set(f"Opened {self.game_dir.name}. RSA {self.rsa.n.bit_length()}-bit, E={self.rsa.e}")

@@ -55,8 +55,27 @@ except ImportError:  # pragma: no cover
     from cryptography.hazmat.backends import default_backend
 
 
-RSA_PUBKEY_VA = 0x144C624A0
+RSA_PUBKEY_VA = 0x144D71B00   # EliteDangerous64.exe .rdata (Odyssey 4.x); was 0x144C624A0 pre-relocation
 RSA_PUBKEY_SIZE = 268
+# DER prefix of the embedded 2048-bit RSAPublicKey: SEQUENCE(0x108) INTEGER(0x101) 00 <256-byte modulus>.
+# The key itself is stable across builds; only its VA drifts, so we scan for this when the VA misses.
+RSA_DER_PREFIX = bytes.fromhex('3082010802820101' + '00')
+
+# The RSA-2048 public key is BAKED IN so the extractor runs without the game
+# binary present (e.g. in a clean VM with only the Win64 asset tree). It is
+# byte-identical across every Odyssey build seen; only its address inside the
+# exe moves. Recovered from EliteDangerous64.exe (VA 0x144D71B00). E = 3.
+RSA_PUBKEY_E = 3
+RSA_PUBKEY_N_HEX = (
+    'aac002d3b5bae06f6eae6f05155fd7416077451ff27ab327f92be289590b48eb'
+    '6528d93f66048fc2d6e80da7e6a962f575ac11cb2ffba23e8a3812e8307fb17d'
+    '6f16cc810ccab39ecf0c17660d3983e0cb21e5dddd6fa0daba2dc37589ef4fcc'
+    'b988d2385ca9591c3348649aaf53a99d89c4d323bce1c13ca3b602e376850e24'
+    '4004e167acecc99f1d65da7915426328a5354777b5220414c7d3d811485211d3'
+    '3516534615548389f7398161275edb5de1273a23d11a32a9a20378f821bd08e8'
+    'c5e233d602fe338ed210497f6b02333e22ac79e452e0db79577a8a499f1493df'
+    '9927c920c58ae84c03a871e2b65c03c2d14caad12d0e7371659043def3aa774d'
+)
 ZLIB_MAGICS = (b'\x78\x9c', b'\x78\xda', b'\x78\x01', b'\x78\x5e')
 
 KIND_FREA = 'FREA'
@@ -75,25 +94,43 @@ class RsaKey:
     e: int
 
 
+def default_rsa_key():
+    """The baked-in Odyssey RSA public key. No game binary required."""
+    return RsaKey(int(RSA_PUBKEY_N_HEX, 16), RSA_PUBKEY_E)
+
+
 def load_rsa_key(binary_path):
-    """Read & parse the RSA-2048 public key embedded in EliteDangerous64.exe."""
+    """Read & parse the RSA-2048 public key embedded in EliteDangerous64.exe.
+
+    Tries the known VA first; if that no longer points at the DER blob (the game
+    relocates it every few builds) it scans the raw image for the RSAPublicKey
+    prefix, so the extractor keeps working across updates without a code change.
+    """
     pe = pefile.PE(str(binary_path), fast_load=True)
     image_base = pe.OPTIONAL_HEADER.ImageBase
-    rva = RSA_PUBKEY_VA - image_base
-    fa = None
+    with open(binary_path, 'rb') as f:
+        data = f.read()
+
+    fa = _va_to_fa(pe, RSA_PUBKEY_VA - image_base)
+    if fa is not None and data[fa:fa + len(RSA_DER_PREFIX)] == RSA_DER_PREFIX:
+        der = data[fa:fa + RSA_PUBKEY_SIZE]
+    else:
+        idx = data.find(RSA_DER_PREFIX)
+        if idx < 0:
+            raise RuntimeError("RSA pubkey DER prefix not found in binary "
+                               f"(VA 0x{RSA_PUBKEY_VA:x} stale and scan failed)")
+        der = data[idx:idx + RSA_PUBKEY_SIZE]
+    n, e = _parse_rsa_der(der)
+    return RsaKey(n, e)
+
+
+def _va_to_fa(pe, rva):
+    """Map an image RVA to a file offset, or None if it isn't in a raw section."""
     for s in pe.sections:
         if s.VirtualAddress <= rva < s.VirtualAddress + s.Misc_VirtualSize:
             off = rva - s.VirtualAddress
-            if off < s.SizeOfRawData:
-                fa = s.PointerToRawData + off
-            break
-    if fa is None:
-        raise RuntimeError(f"RSA pubkey VA 0x{RSA_PUBKEY_VA:x} not in any section")
-    with open(binary_path, 'rb') as f:
-        f.seek(fa)
-        der = f.read(RSA_PUBKEY_SIZE)
-    n, e = _parse_rsa_der(der)
-    return RsaKey(n, e)
+            return s.PointerToRawData + off if off < s.SizeOfRawData else None
+    return None
 
 
 def _parse_rsa_der(der):

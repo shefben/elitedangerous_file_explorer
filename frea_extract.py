@@ -48,7 +48,8 @@ def find_game_dir(explicit):
     if explicit:
         return Path(explicit)
     for d in GAME_DIR_DEFAULTS:
-        if (Path(d) / 'EliteDangerous64.exe').exists():
+        # Only the Win64 asset tree is required; the binary is optional (key is baked in).
+        if (Path(d) / 'Win64').is_dir():
             return Path(d)
     return None
 
@@ -89,14 +90,24 @@ def main():
     args = ap.parse_args()
 
     game = find_game_dir(args.game)
-    if not game or not (game / 'EliteDangerous64.exe').exists():
-        print("ERROR: could not find the game directory. Use --game.")
+    if not game or not (game / 'Win64').is_dir():
+        print("ERROR: could not find a Win64 asset directory. Use --game to point "
+              "at the elite-dangerous-odyssey-64 folder (or one containing Win64).")
         return 2
     win64 = game / 'Win64'
     binary = game / 'EliteDangerous64.exe'
 
     print(f"Game: {game}")
-    rsa = fc.load_rsa_key(binary)
+    # The RSA public key is baked in, so no binary is needed. If the binary
+    # happens to be present, extract from it to catch a future key change.
+    if binary.exists():
+        try:
+            rsa = fc.load_rsa_key(binary)
+        except Exception as ex:
+            print(f"  (binary key load failed: {ex}; using baked-in key)")
+            rsa = fc.default_rsa_key()
+    else:
+        rsa = fc.default_rsa_key()
     print(f"RSA pubkey: {rsa.n.bit_length()}-bit, E={rsa.e}")
 
     kind_filter = {k.strip() for k in args.kinds.split(',') if k.strip()} or None
